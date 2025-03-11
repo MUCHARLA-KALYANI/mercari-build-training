@@ -129,9 +129,18 @@ async def add_item(
 
     image_name = await hash_and_save_image(image)
     cursor = db.cursor()
+    ##STEP 5-3 #######
+    cursor.execute("SELECT id FROM categories where name = ?",(category,))
+    row = cursor.fetchone()
+    if not row:
+        cursor.execute("INSERT INTO categories (name) VALUES (?)",(category,))
+        db.commit()
+        category_id = cursor.lastrowid
+    else:
+        category_id = row[0]
     cursor.execute(
-        "INSERT INTO items (name, category, image_name) VALUES (?, ?, ?)",
-        (name, category, image_name)
+        "INSERT INTO items2 (name, category_id, image_name) VALUES (?, ?, ?)",
+        (name, category_id, image_name)
     )
     db.commit()
     return AddItemResponse(**{"message": f"item received: {name}"})
@@ -142,7 +151,7 @@ class GetItemsResponse(BaseModel):
 @app.get("/items", response_model=GetItemsResponse)
 def get_item(db: sqlite3.Connection = Depends(get_db)):
     cursor = db.cursor()
-    cursor.execute("SELECT * FROM items")
+    cursor.execute("SELECT * FROM items2")
     rows = cursor.fetchall()
     for i in range(len(rows)):
         rows[i] = dict(rows[i])    
@@ -154,7 +163,7 @@ def get_nth_item(item_id: int, db: sqlite3.Connection = Depends(get_db)):
     if item_id < 1:
         raise HTTPException(status_code=400, detail="ID should be larger than 1")
     cursor = db.cursor()
-    cursor.execute("SELECT * FROM items WHERE id = ?", (item_id,))
+    cursor.execute("SELECT * FROM items2 WHERE id = ?", (item_id,))
     row = cursor.fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Item not found")
@@ -166,7 +175,7 @@ def search_items(keyword: str, db: sqlite3.Connection = Depends(get_db)):
         raise HTTPException(status_code=400, detail="keyword is null")
 
     cursor = db.cursor()
-    cursor.execute("SELECT * FROM items WHERE name LIKE ?", (f"%{keyword}%",))
+    cursor.execute("SELECT * FROM items2 WHERE name LIKE ?", (f"%{keyword}%",))
     rows = cursor.fetchall()
     for i in range(len(rows)):
         rows[i] = dict(rows[i])
