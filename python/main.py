@@ -8,7 +8,7 @@ import sqlite3
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from typing import Dict, List
-
+import json
 
 # Define the path to the images & sqlite3 database
 images = pathlib.Path(__file__).parent.resolve() / "images"
@@ -19,7 +19,7 @@ def get_db():
     if not db.exists():
         yield
 
-    conn = sqlite3.connect(db)
+    conn = sqlite3.connect(db, check_same_thread=False)
     conn.row_factory = sqlite3.Row  # Return rows as dictionaries
     try:
         yield conn
@@ -28,45 +28,51 @@ def get_db():
 
 
 ################## for STEP 4-1: ####################
-import json
-JSON_FILE = 'items.json'
-# Function to read the JSON file
-def read_json_file() -> Dict[str, List[Dict[str,str]]]:
-    if not os.path.exists(JSON_FILE):
-        with open(JSON_FILE, 'w') as f:
-            json.dump({"items": []}, f)  # Initialize with an empty list
-    with open(JSON_FILE, 'r') as f:
-        return json.load(f)
+# import json
+# JSON_FILE = 'items.json'
+# # Function to read the JSON file
+# def read_json_file() -> Dict[str, List[Dict[str,str]]]:
+#     if not os.path.exists(JSON_FILE):
+#         with open(JSON_FILE, 'w') as f:
+#             json.dump({"items": []}, f)  # Initialize with an empty list
+#     with open(JSON_FILE, 'r') as f:
+#         return json.load(f)
 
-# Function to write data to the JSON file
-def write_json_file(data):
-    with open(JSON_FILE, 'w') as f:
-        json.dump(data, f, indent=4)
+# # Function to write data to the JSON file
+# def write_json_file(data):
+#     with open(JSON_FILE, 'w') as f:
+#         json.dump(data, f, indent=4)
 
 ######################################################
 
 ################## for STEP 4-4: #####################
 import hashlib
-def hash_image(image_file: UploadFile) -> str:
-    try:
-        # Read image
-        image = image_file.file.read()
-        hash_value = hashlib.sha256(image).hexdigest()
-        hashed_image_name = f"{hash_value}.jpg"
-        hashed_image_path = images / hashed_image_name
-        # Save image with hashed value as image name
-        with open(hashed_image_path, 'wb') as f:
-            f.write(image)
-        return hashed_image_name
+# def hash_image(image_file: UploadFile) -> str:
+#     try:
+#         # Read image
+#         image = image_file.file.read()
+#         hash_value = hashlib.sha256(image).hexdigest()
+#         hashed_image_name = f"{hash_value}.jpg"
+#         hashed_image_path = images / hashed_image_name
+#         # Save image with hashed value as image name
+#         with open(hashed_image_path, 'wb') as f:
+#             f.write(image)
+#         return hashed_image_name
     
-    except Exception as e:
-        raise RuntimeError(f"An unexpected error occurred: {e}")
+#     except Exception as e:
+#         raise RuntimeError(f"An unexpected error occurred: {e}")
 
 ######################################################
 
 # STEP 5-1: set up the database connection
 def setup_database():
-    pass
+    conn = sqlite3.connect(db)
+    cursor = conn.cursor()
+    sql_file = pathlib.Path(__file__).parent.resolve() / "db" / "items.sql"
+    with open(sql_file, "r") as f:
+        cursor.executescript(f.read())
+    conn.commit()
+    conn.close()
 
 
 @asynccontextmanager
@@ -106,7 +112,7 @@ class AddItemResponse(BaseModel):
 
 
 @app.post("/items", response_model=AddItemResponse)
-def add_item(
+async def add_item(
     name: str = Form(...),
     category: str = Form(...), # For STEP 4-2
     image: UploadFile = File(...), # For STEP 4-4
@@ -121,23 +127,38 @@ def add_item(
     if not image:
         raise HTTPException(status_code=400, detail="image is required")
 
-    hashed_image = hash_image(image)
-    insert_item(Item(name=name, category=category, image=hashed_image))
+    image_name = await hash_and_save_image(image)
+    cursor = db.cursor()
+    cursor.execute(
+        "INSERT INTO items (name, category, image_name) VALUES (?, ?, ?)",
+        (name, category, image_name)
+    )
+    db.commit()
     return AddItemResponse(**{"message": f"item received: {name}"})
 
-@app.get("/items")
-def get_items():
-    # For STEP 4-3
-    all_data = read_json_file()
-    return all_data
+class GetItemsResponse(BaseModel):
+    items: list[dict]
+
+@app.get("/items", response_model=GetItemsResponse)
+def get_item(db: sqlite3.Connection = Depends(get_db)):
+    cursor = db.cursor()
+    cursor.execute("SELECT * FROM items")
+    rows = cursor.fetchall()
+    for i in range(len(rows)):
+        rows[i] = dict(rows[i])    
+    return GetItemsResponse(**{"items": rows})
 
 # For STEP 4-5
 @app.get("/items/{item_id}")
-def get_item_by_id(item_id):
-    item_id_int = int(item_id)
-    all_data = read_json_file()
-    item = all_data["items"][item_id_int - 1]
-    return item
+def get_nth_item(item_id: int, db: sqlite3.Connection = Depends(get_db)):
+    if item_id < 1:
+        raise HTTPException(status_code=400, detail="ID should be larger than 1")
+    cursor = db.cursor()
+    cursor.execute("SELECT * FROM items WHERE id = ?", (item_id,))
+    row = cursor.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Item not found")
+    return row
 
 # get_image is a handler to return an image for GET /images/{filename} .
 @app.get("/image/{image_name}")
@@ -160,15 +181,27 @@ class Item(BaseModel):
     category: str
     image: str
 
+async def hash_and_save_image(image: UploadFile):
+    if not image.filename.endswith(".jpg"):
+        raise HTTPException(status_code=400, detail="Image path does not end with .jpg")
+    sha256 = hashlib.sha256()
+    contents = await image.read()
+    sha256.update(contents)
+    res = f"{sha256.hexdigest()}.jpg"
+    image_path = images / res
+    with open(image_path, "wb") as f:
+        f.write(contents)
 
-def insert_item(item: Item):
-    current = read_json_file()
+    return res
 
-    # for STEP 4-2 
-    # current["items"].append({"name": item.name, "category": item.category})
+# def insert_item(item: Item):
+#     current = read_json_file()
+
+#     # for STEP 4-2 
+#     # current["items"].append({"name": item.name, "category": item.category})
     
 
-    #for STEP 4-4 
-    current["items"].append({"name": item.name, "category": item.category, "image_name": item.image})
+#     #for STEP 4-4 
+#     current["items"].append({"name": item.name, "category": item.category, "image_name": item.image})
     
-    write_json_file(current)
+#     write_json_file(current)
