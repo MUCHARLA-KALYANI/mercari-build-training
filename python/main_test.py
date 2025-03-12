@@ -53,6 +53,8 @@ def test_hello(want_status_code, want_body):
     response_body = client.get("/").json()
     # STEP 6-2: confirm the status code
     # STEP 6-2: confirm response body
+    assert want_status_code == 200
+    assert want_body == response_body
 
 
 # STEP 6-4: uncomment this test
