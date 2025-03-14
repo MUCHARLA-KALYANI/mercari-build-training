@@ -228,3 +228,40 @@ async def hash_and_save_image(image: UploadFile):
 #     current["items"].append({"name": item.name, "category": item.category, "image_name": item.image})
     
 #     write_json_file(current)
+
+class ItemCreate(BaseModel):
+    name: str
+    category: str
+
+@app.post("/items/", response_model=AddItemResponse)
+async def add_item_json(
+    item: ItemCreate,
+    db: sqlite3.Connection = Depends(get_db),
+):
+    # Validate input
+    if not item.name:
+        raise HTTPException(status_code=400, detail="name is required")
+    if not item.category:
+        raise HTTPException(status_code=400, detail="category is required")
+    
+    cursor = db.cursor()
+    # Check if category exists or create it
+    cursor.execute("SELECT id FROM categories WHERE name = ?", (item.category,))
+    row = cursor.fetchone()
+    if not row:
+        cursor.execute("INSERT INTO categories (name) VALUES (?)", (item.category,))
+        db.commit()
+        category_id = cursor.lastrowid
+    else:
+        category_id = row[0]
+    
+    # Use a default image for JSON requests
+    image_name = "default.jpg"
+    
+    cursor.execute(
+        "INSERT INTO items2 (name, category_id, image_name) VALUES (?, ?, ?)",
+        (item.name, category_id, image_name)
+    )
+    db.commit()
+    
+    return AddItemResponse(**{"message": f"item received: {item.name}"})
